@@ -38,7 +38,7 @@ AsyncWebServer server(80);
 #define ledPWMResolution 8
 
 // Pins used for segment displays
-const int hours_pin[8] = {9, 8, 3, 14, 13, 10, 11, 12};
+const int hours_pin[8] = {10, 8, 3, 9, 14, 11, 12, 13};
 const int minutes_pin[8] = {7, 4, 5, 6, 18, 15, 16, 17};
 
 // Additional Control Pins
@@ -165,6 +165,11 @@ void setup() {
   // Connect to hard coded wifi for testing.
   WiFi.begin(WIFI_SSID, WIFI_PSK);
 
+  while (!WiFi.isConnected()) {
+    USBSerial.println("Connecting to WiFi...");
+    delay(100);
+  }
+
   // Begin Time Keeping
   timeClient.begin();
   timeClient.update();
@@ -178,7 +183,7 @@ void setup() {
   ledcWrite(ledChannel, 50);
 
   // Begin I2C on pins 34, 33.
-  Wire.begin(33, 21);
+  Wire.begin(34, 33);
   initLightSensor();
   ambientLight.begin();
 
