@@ -369,8 +369,8 @@ void loop() {
     softAPActive = true;
   }
 
-  // Reconnect to NTP To update time at midnight every night
-  if(timeClient.getMinutes() == 0 && timeClient.getSeconds() == 0){
+  // Reconnect to NTP To update time 4 times a day.
+  if((timeClient.getHours() % 6) == 0 && timeClient.getMinutes() == 0 && timeClient.getSeconds() == 0){
     timeClient.update();
     delay(1000);
   }
