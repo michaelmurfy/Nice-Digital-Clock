@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Interwebz Bedside Clock</title>
+  <link rel="stylesheet" href="bootstrap.min.css">
+  <style>
+    body {
+      background-color: #343a40;
+      color: #f8f9fa;
+    }
+    .card {
+      background-color: #495057;
+      border: none;
+      margin-bottom: 1rem;
+    }
+    .btn-custom {
+      background-color: #007bff;
+      border-color: #007bff;
+      color: #fff;
+    }
+    /* Make the select element scrollable on mobile */
+    select.form-control {
+      max-height: 200px;
+      overflow-y: auto;
+    }
+  </style>
+</head>
+<body>
+  <div class="container py-4">
+    <h1 class="text-center mb-4">Interwebz Bedside Clock</h1>
+    
+    <!-- Timezone & DST Configuration -->
+    <div class="card">
+      <div class="card-header">Timezone & DST Configuration</div>
+      <div class="card-body">
+        <div class="form-group">
+          <label for="timezoneSelect">Select Timezone:</label>
+          <select id="timezoneSelect" class="form-control">
+            <option value="">Loading timezones…</option>
+          </select>
+        </div>
+        <button id="updateTimezone" class="btn btn-custom">Update Timezone</button>
+        <div id="tzResult" class="mt-2"></div>
+      </div>
+    </div>
+    
+    <!-- NTP Server Configuration -->
+    <div class="card">
+      <div class="card-header">NTP Server Configuration</div>
+      <div class="card-body">
+        <div class="form-group">
+          <label for="ntpServer">NTP Server:</label>
+          <input type="text" id="ntpServer" class="form-control" placeholder="Enter NTP Server" value="pool.ntp.org">
+        </div>
+        <button id="updateNTP" class="btn btn-custom">Update NTP Server</button>
+        <div id="ntpResult" class="mt-2"></div>
+      </div>
+    </div>
+    
+    <!-- Time Format -->
+    <div class="card">
+      <div class="card-header">Time Format</div>
+      <div class="card-body">
+        <div class="form-check">
+          <input type="checkbox" class="form-check-input" id="timeFormatCheckbox">
+          <label class="form-check-label" for="timeFormatCheckbox">12 Hour Format</label>
+        </div>
+        <button id="updateTimeFormat" class="btn btn-custom mt-2">Update Time Format</button>
+      </div>
+    </div>
+    
+    <!-- WiFi Configuration -->
+    <div class="card">
+      <div class="card-header">WiFi Configuration</div>
+      <div class="card-body">
+        <div class="form-group">
+          <label for="ssid">SSID</label>
+          <input type="text" id="ssid" class="form-control" placeholder="Enter SSID">
+        </div>
+        <div class="form-group">
+          <label for="psk">Password</label>
+          <input type="password" id="psk" class="form-control" placeholder="Enter Password">
+        </div>
+        <button id="updateWiFi" class="btn btn-custom">Update WiFi</button>
+        <div id="wifiResult" class="mt-2"></div>
+      </div>
+    </div>
+    
+    <!-- Brightness Configuration -->
+    <div class="card">
+      <div class="card-header">Brightness Configuration</div>
+      <div class="card-body">
+        <div class="form-group">
+          <label for="minBrightnessSlider">Minimum Brightness</label>
+          <input type="range" id="minBrightnessSlider" class="form-control-range" min="10" max="255" value="10">
+          <span id="minBrightnessDisplay">10</span>
+        </div>
+        <div class="form-group">
+          <label for="maxBrightnessSlider">Maximum Brightness</label>
+          <input type="range" id="maxBrightnessSlider" class="form-control-range" min="10" max="255" value="255">
+          <span id="maxBrightnessDisplay">255</span>
+        </div>
+        <button id="updateBrightness" class="btn btn-custom">Update Brightness</button>
+        <div id="brightnessResult" class="mt-2"></div>
+      </div>
+    </div>
+    
+  </div>
+  
+  <script src="jquery.min.js"></script>
+  <script src="bootstrap.min.js"></script>
+  <script>
+    $(function(){
+      // Load zones.csv and parse using regex to capture quoted fields (handles commas in TZ string)
+      $.get("zones.csv", function(data) {
+        var lines = data.split("\n");
+        var zones = [];
+        var regex = /"([^"]+)"\s*,\s*"([^"]+)"/;
+        lines.forEach(function(line) {
+          var match = line.match(regex);
+          if(match) {
+            zones.push({
+              display: match[1].trim(),
+              tz: match[2].trim()
+            });
+          }
+        });
+        zones.sort(function(a, b) {
+          return a.display.localeCompare(b.display);
+        });
+        var $select = $("#timezoneSelect");
+        $select.empty().append($("<option>").val("").text("Select Timezone"));
+        zones.forEach(function(zone) {
+          $select.append($("<option>").val(zone.tz).text(zone.display));
+        });
+      });
+      
+      // Update brightness display on slider input.
+      $('#minBrightnessSlider').on('input', function(){
+        $('#minBrightnessDisplay').text($(this).val());
+      });
+      $('#maxBrightnessSlider').on('input', function(){
+        $('#maxBrightnessDisplay').text($(this).val());
+      });
+      
+      // Timezone update.
+      $('#updateTimezone').click(function(){
+        var timezone = $('#timezoneSelect').val();
+        $.post('/setTZ', { timezone: timezone }, function(response){
+          $('#tzResult').text(response);
+        });
+      });
+      
+      // NTP server update.
+      $('#updateNTP').click(function(){
+        var ntpServer = $('#ntpServer').val();
+        $.post('/updateNTP', { ntpServer: ntpServer }, function(response){
+          $('#ntpResult').text(response);
+        });
+      });
+      
+      // Time format update.
+      $('#updateTimeFormat').click(function(){
+        var isChecked = $('#timeFormatCheckbox').is(':checked');
+        $.post('/updateTimeFormat', { isChecked: isChecked });
+      });
+      
+      // WiFi update.
+      $('#updateWiFi').click(function(){
+        var ssid = $('#ssid').val();
+        var psk = $('#psk').val();
+        $.post('/updateWiFi', { ssid: ssid, psk: psk }, function(response){
+          $('#wifiResult').text(response);
+        });
+      });
+      
+      // Brightness update.
+      $('#updateBrightness').click(function(){
+        var minVal = $('#minBrightnessSlider').val();
+        var maxVal = $('#maxBrightnessSlider').val();
+        $.post('/updateBrightness', { minBrightnessSlider: minVal, maxBrightnessSlider: maxVal }, function(response){
+          $('#brightnessResult').text(response);
+        });
+      });
+    });
+  </script>
+</body>
+</html>

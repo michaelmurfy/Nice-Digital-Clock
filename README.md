@@ -1,4 +1,10 @@
 # Digital Clock Hardware
+This is a fork from the original project with 3 main goals:
+- Fix automatic DST time.
+- Add the ability to change the NTP server.
+- Smoother automatic brightness.
+
+I also recreated the web interface to be a little cleaner using Bootstrap. Functionality remains the same outside of that.
 
 ## Notice:
 There is a hardware change between the 8 clocks sold on Tindie and these. The original production clocks from tindie are:  
@@ -15,4 +21,4 @@ This clock serves it's own webpage for configuration. Upon first boot, it activa
 To view the device's IP address, press the boot button on the rear.
 
 ## Hacking
-This device openly exposes both a TTL UART and JTAG port on the rear of te board, near the ESP Module. You can also use the USB Port to program and upload code. While holding the boot button, then press reset. This enters the ESP32 into bootloader mode, and allows you to reflash new firmware or filesystem to the device.
+This device openly exposes both a TTL UART and JTAG port on the rear of the board, near the ESP Module. You can also use the USB Port to program and upload code. While holding the boot button, then press reset. This enters the ESP32 into bootloader mode, and allows you to reflash new firmware or filesystem to the device.
