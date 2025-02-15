@@ -1,5 +1,4 @@
 #include <Arduino.h>
-#include <ArduinoJson.h>
 #include <WiFi.h>
 #include <Preferences.h>
 #include <AsyncUDP.h>
@@ -10,49 +9,107 @@
 #include <time.h>
 #include <movingAvg.h>
 
-// User Memory - WiFi SSID, PSK, Clock Configuration bits.
+// Prototypes:
+uint8_t readAmbientLightData();
+static void IRAM_ATTR showIPFlag();
+void updateBrightnessSmooth();
+
+// User Memory for WiFi/clock configuration.
 Preferences preferences;
 
-// AccessPoint Credentials. Default UserMem WiFi Value.
+// Access Point Credentials.
 const char* APID = "NiceClock";
 const char* APSK = "MinesBigger";
 const char* GARBAGE_STRING = "C!pbujKY2#4HXbcm5dY!WJX#ns29ff#vEDWmbZ9^d!QfBW@o%Trfj&sPENuVe&sx";
 
-// Global Variables
+// Global variables.
 bool softAPActive = false;
 bool showIP = false;
 
-// Server Stuff
+// Server Stuff.
 WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP);  // Initially uses default server; can be reinitialized.
+NTPClient timeClient(ntpUDP);  // Uses default server ("time.cloudflare.com") initially; can be updated.
 AsyncWebServer server(80);
 
-// PWM properties for brightness control
+// PWM properties for brightness control.
 #define freq 2000
 #define ledChannel 0
 #define ledPWMResolution 8
 
-// Pins used for segment displays (unchanged from your base code)
-const int hours_pin[8] = {10, 8, 3, 9, 14, 11, 12, 13};
+// Pins for 7-segment displays.
+const int hours_pin[8]   = {10, 8, 3, 9, 14, 11, 12, 13};
 const int minutes_pin[8] = {7, 4, 5, 6, 18, 15, 16, 17};
 
-// Additional Control Pins
-const int ledPin = 1;       // Power pin for segment displays. Common Anode.
-const int decimalPin = 35;  // Decimal point which separates hours and minutes.
+// Additional control pins.
+const int ledPin = 1;       // Power pin for segment displays (common anode)
+const int decimalPin = 35;  // Decimal point separating hours and minutes
 // Other decimal points on pins 36, 37, 38.
 
-// Global variable for smooth dimming PWM output.
+// ----- Brightness Smoothing Variables -----
+// We accumulate ambient light readings over 500ms, then interpolate from the previous PWM value to the new target over that 500ms period.
 uint8_t currentPWM = 50;
+unsigned long lastAvgTime = 0;
+unsigned long transitionStartTime = 0;
+uint8_t prevPWM = 50;
+uint8_t targetPWM = 50;
+uint32_t lightSum = 0;
+uint16_t sampleCount = 0;
 
-// Smooth transition helper: move current value one step toward target.
-uint8_t smoothTransition(uint8_t current, uint8_t target) {
-  if (current < target) return current + 1;
-  if (current > target) return current - 1;
-  return current;
+// Create moving average object for ambient light (if desired).
+movingAvg ambientLight(10);
+
+// ----- Function: readAmbientLightData -----
+// Reads the BH1730 sensor data and maps it between the stored min and max brightness values.
+uint8_t readAmbientLightData() {
+  Wire.beginTransmission(0x29);
+  Wire.write(0b10010100);
+  Wire.endTransmission();
+  Wire.requestFrom(0x29, 2);
+  byte highByte = Wire.read();
+  byte lowByte = Wire.read();
+  int lightLevel = (highByte << 8) | lowByte;
+  return map(lightLevel, 0, 65535, preferences.getInt("minBrightness", 10), preferences.getInt("maxBrightness", 255));
 }
 
-/// @brief Prints the time to the 7-segment displays.
-/// Splits hours and minutes into tens and ones and writes the bits.
+// ----- Function: showIPFlag -----
+// Interrupt handler: sets flag so that the IP will be displayed.
+static void IRAM_ATTR showIPFlag() {
+  showIP = true;
+}
+
+// ----- Function: updateBrightnessSmooth -----
+// Accumulates ambient light readings over 500ms, computes an average,
+// then linearly interpolates the PWM output from the previous value to the new target over 500ms.
+void updateBrightnessSmooth() {
+  unsigned long now = millis();
+  uint8_t reading = ambientLight.reading(readAmbientLightData());
+  lightSum += reading;
+  sampleCount++;
+  
+  if (now - lastAvgTime >= 500) {
+    uint8_t avgPWM = sampleCount ? (lightSum / sampleCount) : reading;
+    lastAvgTime = now;
+    lightSum = 0;
+    sampleCount = 0;
+    prevPWM = currentPWM;
+    targetPWM = avgPWM;
+    transitionStartTime = now;
+  }
+  
+  uint32_t elapsed = now - transitionStartTime;
+  if (elapsed < 500) {
+    float fraction = (float)elapsed / 500.0;
+    uint8_t newPWM = prevPWM + (int)((targetPWM - prevPWM) * fraction);
+    ledcWrite(ledChannel, newPWM);
+    currentPWM = newPWM;
+  } else {
+    ledcWrite(ledChannel, targetPWM);
+    currentPWM = targetPWM;
+  }
+}
+
+// ----- Function: printTime -----
+// Splits hours and minutes into tens and ones and writes the bits to the display pins.
 void printTime(int hours, int minutes) {
   bool timeFormat = preferences.getBool("timeFormat", 1);
   if (!timeFormat) {
@@ -63,34 +120,29 @@ void printTime(int hours, int minutes) {
   int minutesT = minutes / 10;
   int minutesO = minutes % 10;
   
-  // Hours tens
   digitalWrite(hours_pin[4], (hoursT >> 0) & 1);
   digitalWrite(hours_pin[5], (hoursT >> 1) & 1);
   digitalWrite(hours_pin[6], (hoursT >> 2) & 1);
   digitalWrite(hours_pin[7], (hoursT >> 3) & 1);
-  // Hours ones
+  
   digitalWrite(hours_pin[0], (hoursO >> 0) & 1);
   digitalWrite(hours_pin[1], (hoursO >> 1) & 1);
   digitalWrite(hours_pin[2], (hoursO >> 2) & 1);
   digitalWrite(hours_pin[3], (hoursO >> 3) & 1);
-  // Minutes tens
+  
   digitalWrite(minutes_pin[4], (minutesT >> 0) & 1);
   digitalWrite(minutes_pin[5], (minutesT >> 1) & 1);
   digitalWrite(minutes_pin[6], (minutesT >> 2) & 1);
   digitalWrite(minutes_pin[7], (minutesT >> 3) & 1);
-  // Minutes ones
+  
   digitalWrite(minutes_pin[0], (minutesO >> 0) & 1);
   digitalWrite(minutes_pin[1], (minutesO >> 1) & 1);
   digitalWrite(minutes_pin[2], (minutesO >> 2) & 1);
   digitalWrite(minutes_pin[3], (minutesO >> 3) & 1);
 }
 
-// Interrupt handler: sets flag to display the IP.
-static void IRAM_ATTR showIPFlag(){
-  showIP = true;
-}
-
-/// @brief Displays the IP address by showing each octet in turn.
+// ----- Function: displayIP -----
+// Displays the IP address on the display by showing each octet in turn.
 void displayIP(IPAddress localIP) {
   pinMode(38, OUTPUT);
   digitalWrite(decimalPin, 1);
@@ -114,47 +166,33 @@ void displayIP(IPAddress localIP) {
   pinMode(38, INPUT);
 }
 
-/// @brief Initializes the BH1730 Ambient Light Sensor.
-void initLightSensor() {
-  Wire.beginTransmission(0x29);
-  Wire.write(0x80);
-  Wire.write(0x3);
-  Wire.endTransmission();
-}
-
-/// @brief Reads ambient light sensor data and maps it between stored min and max brightness.
-uint8_t readAmbientLightData(){
-  Wire.beginTransmission(0x29);
-  Wire.write(0b10010100);
-  Wire.endTransmission();
-  Wire.requestFrom(0x29, 2);
-  byte highByte = Wire.read();
-  byte lowByte = Wire.read();
-  int lightLevel = (highByte << 8) | lowByte;
-  return map(lightLevel, 0, 65535, preferences.getInt("minBrightness", 10), preferences.getInt("maxBrightness", 255));
-}
-
-// Moving average to smooth ambient light changes.
-movingAvg ambientLight(10);
-
 void setup() {
   Serial.begin(9600);
-  Serial.println("Entered setup");
+  Serial.println("Setup started");
   preferences.begin("usermem");
   SPIFFS.begin();
   
+  // Set the timezone from preferences.
   setenv("TZ", preferences.getString("timezone", "UTC").c_str(), 1);
   tzset();
   
+  // Setup PWM for brightness.
   ledcSetup(ledChannel, freq, ledPWMResolution);
   ledcAttachPin(ledPin, ledChannel);
   ledcWrite(ledChannel, 50);
   
+  // Initialize I2C on pins SDA=34, SCL=33.
   Wire.begin(34, 33);
-  initLightSensor();
+  // Initialize ambient light sensor.
+  Wire.beginTransmission(0x29);
+  Wire.write(0x80);
+  Wire.write(0x3);
+  Wire.endTransmission();
+  
   ambientLight.begin();
+  // Perform several dummy readings.
   for (int i = 0; i < 10; i++) {
-    ambientLight.reading(readAmbientLightData());
+    readAmbientLightData();
   }
   
   pinMode(decimalPin, OUTPUT);
@@ -164,7 +202,7 @@ void setup() {
     pinMode(minutes_pin[i], OUTPUT);
   }
   
-  // ---------- WiFi Setup ----------
+  // ----- WiFi Setup -----
   Serial.println("Starting Access Point");
   WiFi.softAPsetHostname("niceclock");
   WiFi.mode(WIFI_AP_STA);
@@ -173,9 +211,8 @@ void setup() {
   
   if (preferences.getString("WiFiSSID", GARBAGE_STRING) == GARBAGE_STRING ||
       preferences.getString("WiFiPSK", GARBAGE_STRING) == GARBAGE_STRING) {
-    Serial.println("WiFi not configured. Skipping network connection.");
-  }
-  else {
+    Serial.println("WiFi not configured. Skipping connection.");
+  } else {
     Serial.println("WiFi configured. Attempting connection.");
     WiFi.setHostname("niceclock");
     WiFi.begin(preferences.getString("WiFiSSID", GARBAGE_STRING).c_str(),
@@ -186,14 +223,13 @@ void setup() {
     }
     Serial.println();
     if (WiFi.isConnected()){
-      Serial.println("Connection Successful. Tearing down AP.");
+      Serial.println("Connection successful. Tearing down AP.");
       WiFi.softAPdisconnect();
       WiFi.mode(WIFI_STA);
       softAPActive = false;
       displayIP(WiFi.localIP());
-    }
-    else {
-      Serial.println("Connection Failed. Please use the web portal to enter valid information.");
+    } else {
+      Serial.println("Connection failed. Use web portal to enter credentials.");
     }
   }
   
@@ -202,7 +238,7 @@ void setup() {
   timeClient.begin();
   timeClient.update();
   
-  // ---------- Web Configuration Endpoints ----------
+  // ----- Web Configuration Endpoints -----
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
     if(!SPIFFS.exists("/index.html")){
       request->send(404, "text/plain", "File not found");
@@ -211,13 +247,7 @@ void setup() {
     request->send(SPIFFS, "/index.html", "text/html");
   });
   
-  server.on("/milligram.min.css", HTTP_GET, [](AsyncWebServerRequest *request){
-    Serial.println("Loading CSS");
-    request->send(SPIFFS, "/milligram.min.css", "text/css");
-  });
-  
   server.on("/zones.csv", HTTP_GET, [](AsyncWebServerRequest *request){
-    Serial.println("Loading zones");
     request->send(SPIFFS, "/zones.csv", "text/csv");
   });
   
@@ -226,7 +256,7 @@ void setup() {
       String ssid = request->getParam("ssid", true)->value();
       String psk = request->getParam("psk", true)->value();
       if(ssid != ""){
-        Serial.println("Updating WiFi Credentials to SSID: " + ssid);
+        Serial.println("Updating WiFi: " + ssid);
         preferences.putString("WiFiSSID", ssid);
         preferences.putString("WiFiPSK", psk);
         WiFi.setHostname("niceclock");
@@ -240,33 +270,9 @@ void setup() {
   server.on("/updateTimeFormat", HTTP_POST, [](AsyncWebServerRequest *request) {
     if(request->hasArg("isChecked")){
       String isChecked = request->arg("isChecked");
-      if(isChecked == "true"){
-        preferences.putBool("timeFormat", 0);
-      } else {
-        preferences.putBool("timeFormat", 1);
-      }
+      preferences.putBool("timeFormat", (isChecked == "true") ? 0 : 1);
     }
     request->send(200, "text/plain", "Time format updated");
-  });
-  
-  server.on("/getTimeFormat", HTTP_GET, [](AsyncWebServerRequest *request){
-    String checkboxStateStr = preferences.getBool("timeFormat", 1) ? "false" : "true";
-    request->send(200, "text/plain", checkboxStateStr);
-  });
-  
-  server.on("/getWiFiSSID", HTTP_GET, [](AsyncWebServerRequest *request){
-    String wiFiSSID = preferences.getString("WiFiSSID", "");
-    request->send(200, "text/plain", wiFiSSID);
-  });
-  
-  server.on("/getMinBrightness", HTTP_GET, [](AsyncWebServerRequest *request){
-    String minB = String(preferences.getInt("minBrightness", 10));
-    request->send(200, "text/plain", minB);
-  });
-  
-  server.on("/getMaxBrightness", HTTP_GET, [](AsyncWebServerRequest *request){
-    String maxB = String(preferences.getInt("maxBrightness", 255));
-    request->send(200, "text/plain", maxB);
   });
   
   server.on("/updateBrightness", HTTP_POST, [](AsyncWebServerRequest *request){
@@ -283,17 +289,15 @@ void setup() {
     if(request->hasArg("timezone")){
       String timezone = request->arg("timezone");
       preferences.putString("timezone", timezone);
-      configTzTime(timezone.c_str(), "pool.ntp.org");
+      configTzTime(timezone.c_str(), "time.cloudflare.com");
       timeClient.update();
     }
     request->send(200, "text/plain", "Timezone updated");
   });
   
-  // New endpoint to update the NTP server.
   server.on("/updateNTP", HTTP_POST, [](AsyncWebServerRequest *request){
     if(request->hasArg("ntpServer")){
       String newNtp = request->arg("ntpServer");
-      // Reinitialize the NTP client with the new server.
       timeClient = NTPClient(ntpUDP, newNtp.c_str());
       timeClient.begin();
       timeClient.update();
@@ -319,7 +323,6 @@ void setup() {
   
   server.begin();
   
-  // Use an interrupt on digital pin 0 to flag display of IP.
   attachInterrupt(digitalPinToInterrupt(0), showIPFlag, FALLING);
 }
 
@@ -331,14 +334,16 @@ void loop() {
     softAPActive = false;
     timeClient.update();
   }
-  if(!softAPActive && !WiFi.isConnected()) {
+  if(!softAPActive && !WiFi.isConnected()){
     Serial.println("Lost Internet. Restarting AP.");
     WiFi.softAPsetHostname("niceclock");
     WiFi.mode(WIFI_AP_STA);
     WiFi.softAP(APID, APSK);
     softAPActive = true;
   }
-  if((timeClient.getHours() % 6) == 0 && timeClient.getMinutes() == 0 && timeClient.getSeconds() == 0){
+  if((timeClient.getHours() % 6) == 0 &&
+     timeClient.getMinutes() == 0 &&
+     timeClient.getSeconds() == 0){
     timeClient.update();
     delay(1000);
   }
@@ -347,11 +352,7 @@ void loop() {
   struct tm *timeinfo = localtime(&now);
   printTime(timeinfo->tm_hour, timeinfo->tm_min);
   
-  if ((millis() % 25) == 0) {
-    uint8_t desiredPWM = ambientLight.reading(readAmbientLightData());
-    currentPWM = smoothTransition(currentPWM, desiredPWM);
-    ledcWrite(ledChannel, currentPWM);
-  }
+  updateBrightnessSmooth();
   
   if (showIP){
     displayIP(WiFi.localIP());
